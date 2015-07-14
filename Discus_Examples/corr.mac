@@ -1,0 +1,48 @@
+################################################################################
+#@ HEADER
+#@ NAME         corr.mac
+#@ 
+#@ KEYWORD      PDF background, shape correction, finite atomic model
+#@ 
+#@ DESCRIPTION  reads a 4*pi*r*rho(r) file (based on a finite atomistic model),
+#@ DESCRIPTION  convolutes each point in the data file by a spherical width 
+#@ DESCRIPTION  defined by a user, calculates/saves the shape function of the 
+#@ DESCRIPTION  corresponding model shape, and finally performs the corrections 
+#@ DESCRIPTION  in order to enable comparison of atomistic models of a given 
+#@ DESCRIPTION  size and shape with experimental PDF G(r) data
+#@
+#@ PARAMETER    $1, 2
+#@ PARAMETER    $1, text,  file name
+#@ PARAMETER    $2, real,  sphere width
+#@
+#@ USAGE        @corr <file>, <sphere width> 
+#@
+#@ END
+#
+################################################################################
+res
+#
+  sys ./Dshaper1.1 $1 $2              
+  ! reads a 4*pi*r*rho(r) file, and performs a system call in order to run 
+  ! Dshaper within the Kuplot module
+  
+  sys cp shape_function.dat shape_$1  
+  ! copy/save as calculated shape function to a better file name 
+#
+res
+  load xy, $1          ! reads a 4*pi*r*rho(r) file again (data set <1>)
+  load xy, shape_$1    ! reads the calculated shape function (data set <2>)
+  kcal sub, 1,2        ! subtracts the y- values of the data sets <2> from <1>
+  ksav 3               ! saves the difference curve (data set <3>), and   
+    outf corr_$1       ! this difference curve data is the corrected PDF G(r)
+    run
+#
+  achx r
+  achy G(r)
+  fnam off
+  sleg 1, $1
+  sleg 2, shape_$1
+  sleg 3, corr_$1
+  skal
+  pl                   ! performs the plot command to show the results 
+  
