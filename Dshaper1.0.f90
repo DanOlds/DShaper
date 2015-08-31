@@ -1,88 +1,523 @@
 Program Dshaper
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-!  Dshaper : by Daniel Olds - dpolds@gmail.com
-! A code which is designed to convolve PDF-real 
-! space data by a spherical shape function
-! in order to generate a characteristic shape function 
-! atomistic PDF model data for use
-! in data refinement.  Input takes the form:
-! ./danshape datain width
-! datain = 4-column dataset (Q I dI dQ)
-!  width = desired width of gaussian 
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-!  Copyright (c) 2015, Los Alamos National Security, LLC
-!  All rights reserved.
-!  Copyright 2015. Los Alamos National Security, LLC. This software was produced
-!  under U.S. Government contract DE-AC52-06NA25396 for Los Alamos National Laboratory 
-!  (LANL), which is operated by Los Alamos National Security, LLC for the U.S. Department 
-!  of Energy. The U.S. Government has rights to use, reproduce, and distribute this software.
-!  NEITHER THE GOVERNMENT NOR LOS ALAMOS NATIONAL SECURITY, LLC MAKES ANY WARRANTY, 
-!  EXPRESS OR IMPLIED, OR ASSUMES ANY LIABILITY FOR THE USE OF THIS SOFTWARE.  
-!  If software is modified to produce derivative works, such modified software should
-!  be clearly marked, so as not to confuse it with the version available from LANL.
-!
-!  Additionally, redistribution and use in source and binary forms, with or without
-!  modification, are permitted provided that the following conditions are met:
-!  1.     Redistributions of source code must retain the above copyright notice,
-!   this list of conditions and the following disclaimer. 
-!  2.      Redistributions in binary form must reproduce the above copyright notice,
-!   this list of conditions and the following disclaimer in the documentation and/or
-!   other materials provided with the distribution. 
-!  3.     Neither the name of Los Alamos National Security, LLC, Los Alamos National Laboratory, 
-!   LANL, the U.S. Government, nor the names of its contributors may be used to endorse or
-!   promote products derived from this software without specific prior written permission. 
-!   
-!   THIS SOFTWARE IS PROVIDED BY LOS ALAMOS NATIONAL SECURITY, LLC AND CONTRIBUTORS "AS IS"
-!   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED 
-!   WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
-!   IN NO EVENT SHALL LOS ALAMOS NATIONAL SECURITY, LLC OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, 
-!   INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED 
-!   TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS 
-!   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
-!   LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF 
-!   THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-!
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 Implicit None
-Double Precision, Allocatable, Dimension(:) :: datain,particle_func,dataout,xin
-Double Precision, Allocatable, Dimension(:) :: padded_datain, padded_dataout
+Double Precision, Allocatable, Dimension(:) :: datain,particle_func,xin
+Double Precision, Allocatable, Dimension(:) :: padded_datain,padded_dataout
 Integer :: datain_size,i
 Double Precision :: rescaler,width,m,b
 Double Precision :: shift
 Double Precision,parameter :: pi=3.141592653589793d0
+!!!!!!!!!!!! new params
+Double Precision :: delx,xis
+Integer :: sinc_pts
+Integer :: j,k,padding_multiplier,extension
+Logical :: file_name_from_param
+Character(30) :: kernel_choice
+Double Precision, Allocatable, Dimension(:) :: dataout,sinc
+Character(120) :: ufk_name, pdf_from_param_name
 
-print *, "                 Dshaper v1.0"
+print *, "                aDshaper v1.2"
 print *, "        by Daniel Olds, Hsiu-Wen Wang"
 print *, "             and Katharine Page"
 
+!to bring in options
+Call Select_Modes()
+
 Call Read_In_Data()
 
-Call Setup_Sphere_Impulse()
+if (padding_multiplier.gt.1) Call Adding_Padding(padding_multiplier)
 
+
+!to setup the sinc function
+if(kernel_choice.eq.'sinc') then
+  Call Setup_Sinc_Kernel()
+  Call Convolve_Data()
+else if(kernel_choice.eq.'sphere') then 
+  !Call Setup_Sphere_Kernel()
+  !do other things!
+Call Setup_Sphere_Impulse()
 Call Generate_Padded_Convolution()
 
+else if(kernel_choice.eq.'user') then 
+  print *, "not yet implemented"
+   !Call User_Provided_Kernel()
+   print *, "width is:",width
+end if
+
+
+!to write data out
 Call Write_Out_Function()
 
-!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1
 contains
 !!!!!!!!!!!!!!!!!!!!!!!!!
 Subroutine Write_Out_Function()
-open(unit=22,status="replace",file="shape_function.dat")
-do i=1,datain_size
-  if(i-shift+1.ge.1) then !shifted data in range
-    write(22,*) xin(Int(i-shift+1)),dataout(i)*rescaler
-  end if
-end do
+Integer :: i,j
 
-do i=Int(datain_size-shift+2),datain_size
-  write(22,*) xin(i),padded_dataout(Int(i+shift))*rescaler
+rescaler=1.d0/rescaler
+
+open(unit=22,status="replace",file="shape_function.dat")
+open(unit=23,status="replace",file="corrected_pdf.dat")
+do i=1,datain_size
+    j=i-shift
+    if(j.gt.datain_size) j=j-datain_size
+    if(j.lt.1) j=j+datain_size
+    write(22,*) xin(i),dataout(j)*rescaler
+    write(23,*) xin(i),datain(i) - (dataout(j)*rescaler)
 end do
 close(22)
+close(23)
+
 
 End Subroutine Write_Out_Function
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Subroutine Read_In_Data()
+Integer :: num_args,reason
+Character(128) :: width_name, datain_name
+Logical :: is_there
+Real :: junk1, junk2, is_on
+Double Precision :: x,y
+Character(160) :: first_line
+Integer :: c, col_count
+
+num_args = command_argument_count()
+
+print *, "status of that one thingy:",file_name_from_param
+
+if(num_args.eq.2) then ! assume second argument is real number, describing width
+    Call get_command_argument(2,width_name)
+    Read(width_name,998) width
+    998 Format(F10.0)
+else if(num_args.eq.1) then !assume width is in file called "sphere_width.dat"
+    Inquire(file="sphere_width.dat",exist=is_there)
+    if(is_there) then
+        open(unit=69,file="sphere_width.dat")
+        read(69,*) width
+        close(69)
+    else if(width.ne.0.d0) then !pulled something from param file
+        print *, "width from parameter file was:",width
+    else !file not there and param file missing it
+        print *, " "
+        print *, " Please provide a width, either in the command line as the second"
+        print *, "argument, in the dshaper.parm file, or in a file 'sphere_width.dat'."
+        print *, " "
+        Call exit()
+    end if
+else if(file_name_from_param) then !file name given in parameter file
+        datain_name=pdf_from_param_name
+        print *, "using run name from parameter file:",Trim(datain_name)
+else !some other number of arguments
+    print *, " "
+    print *, "     Please provide the name of the pdf data file, followed by the diameter "
+    print *, "      of sphere to convolve with.  Alternativly, place this width value in"
+    print *, "    a file in the same directory as the excecutable, called 'sphere_width.dat'"
+    print *, " "
+    Call exit()
+end if
+
+if(.not.file_name_from_param) Call get_command_argument(1,datain_name) !pullling in data(signal) name
+
+
+!find length of files
+Inquire(file=Trim(datain_name),exist=is_there)
+!rand_pick_mode=6
+if(is_there) then
+!first, figure out how many columns there are
+open(unit=77,position="rewind",file=Trim(datain_name))
+  read(77,'(a)') first_line
+  col_count = count([len_trim(first_line) > 0, (first_line(c:c)/=" " .and. &
+      first_line(c:c)/="," .and. first_line(c+1:c+1) == " " .or. &
+      first_line(c+1:c+1) == "," , c=1,len_trim(first_line)-1)])
+close(77)
+    
+open(unit=77,position="rewind",file=Trim(datain_name))
+  !next count up how many data points there are
+  is_on=1
+  datain_size=0
+  do while(is_on.eq.1)
+    if(col_count.eq.4) then
+        read(77,*,iostat=reason) x,y,junk1,junk2
+    else if(col_count.eq.3) then
+        read(77,*,iostat=reason) x,y,junk1
+    else if(col_count.eq.2) then
+        read(77,*,iostat=reason) x,y
+    else 
+        print *, "Problem : I'm not sure how many columns your data has."
+        print *, "   Please contact Dan Olds at oldsdp@ornl.gov"
+        Call Exit() 
+    end if 
+    if(reason.gt.0) then !some kind of error
+      print *, "something went terribly wrong",x
+      is_on=0
+    else if(reason.lt.0) then !end of file reached
+      is_on=0
+    else !is good
+    datain_size=datain_size+1
+    end if !end of reason 
+  end do !end of do while is_on
+close(77)
+else
+  print *, "file not found:",Trim(datain_name)
+end if 
+
+
+allocate(datain(1:datain_size))
+allocate(padded_datain(1:2*datain_size))
+allocate(padded_dataout(1:2*datain_size))
+allocate(xin(1:datain_size))
+Allocate(dataout(1:datain_size))
+dataout(:)=0.d0
+
+!now read in datain
+datain(:)=0.d0
+
+open(unit=21,position="rewind",file=Trim(datain_name))
+do i=1,datain_size
+    if(col_count.eq.4) then
+        read(21,*) xin(i),datain(i),junk1,junk2
+    else if(col_count.eq.3) then
+        read(21,*) xin(i),datain(i),junk1
+    else if(col_count.eq.2) then
+        read(21,*) xin(i),datain(i)
+    end if
+end do
+close(21)
+
+End Subroutine Read_In_Data
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Subroutine User_Provided_Kernel()
+Integer :: reason, user_file_length,i, c
+Integer :: col_count
+Logical :: is_on, go_on
+Double Precision :: x,y,z1,z2
+Character(120) :: first_line
+delx=xin(4)-xin(3)
+
+!add number of columns adjustment
+!add ability to take symmetric or asymetric dataset
+
+open(unit=77,file=Trim(ufk_name))
+  read(77,'(a)') first_line
+  col_count = count([len_trim(first_line) > 0, (first_line(c:c)/=" " .and. &
+      first_line(c:c)/="," .and. first_line(c+1:c+1) == " " .or. &
+      first_line(c+1:c+1) == "," , c=1,len_trim(first_line)-1)])
+close(77)
+
+print *, "user kernal had this many columns",col_count
+
+user_file_length=0
+go_on=.true.
+!first, determine length of user file
+open(unit=77,position="rewind",file=Trim(ufk_name))
+do while(go_on)
+    if(col_count.eq.1) read(77,*,iostat=reason) y
+    if(col_count.eq.2) read(77,*,iostat=reason) x,y
+    if(col_count.eq.3) read(77,*,iostat=reason) x,y,z1
+    if(col_count.eq.4) read(77,*,iostat=reason) x,y,z1,z2
+    if(reason.gt.0) then !error
+      print *, "something went wrong reading the file"
+    else if(reason.lt.0) then !end of file
+      go_on=.false.
+    else !all is good
+    user_file_length=user_file_length+1
+    end if
+end do !end of do while(is_on.eq.1)
+close(77)
+
+sinc_pts=Floor(Real(user_file_length)/2.d0)
+print *, "sinc_pts is:",sinc_pts
+allocate(sinc(-sinc_pts:sinc_pts))
+
+sinc(:)=0.d0
+print *, "col_count was:",col_count
+rescaler = 0.d0
+open(unit=77,position="rewind",file=Trim(ufk_name))
+do i = -sinc_pts,sinc_pts
+    if(col_count.eq.1) read(77,*) y
+    if(col_count.eq.2) read(77,*) x, y
+    if(col_count.eq.3) read(77,*) x, y, z1
+    if(col_count.eq.4) read(77,*) x, y, z1, z2
+  sinc(i) = y
+  rescaler = rescaler + sinc(i)
+end do
+
+close(77)
+
+shift=-Int(mod(Real(sinc_pts),Real(datain_size)))
+
+open(unit=99,status="replace",file="kernel_was.dat")
+do i=-sinc_pts,sinc_pts
+  xis = Dble(i)
+  write(99,*) xis, sinc(i)
+end do
+close(99)
+
+End Subroutine User_Provided_Kernel
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Subroutine Setup_Sphere_Kernel()
+delx=xin(4)-xin(3)
+sinc_pts=2*datain_size+extension
+
+print *, "diameter is now:",width
+shift=-Int(mod(Real(sinc_pts),Real(datain_size)))
+
+allocate(sinc(-sinc_pts:sinc_pts))
+sinc(:)=0.d0
+rescaler = 0.d0
+open(unit=28,status="replace",file="convolver_sphere_was.dat")
+do i=-sinc_pts,sinc_pts
+  xis = delx*Dble(i)
+  if(xis.le.2.d0*width .and. xis.gt.0.d0) then
+    sinc(i) = 1.d0 - (1.5d0 * (xis / (2.d0*width)))+(0.5d0*((xis/(2.d0* width))**3.d0))
+    sinc(i) = 4.d0 * 3.141592d0 * (xis**1.d0) * sinc(i)
+    write(28,*) xis, sinc(i)
+  else
+    write(28,*) xis, 0.d0
+  end if
+  
+  rescaler = rescaler + sinc(i) 
+end do
+close(28)
+
+End Subroutine Setup_Sphere_Kernel
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Subroutine Setup_Sinc_Kernel()
+delx=xin(4)-xin(3)
+sinc_pts=2*datain_size+extension
+shift=-Int(mod(Real(sinc_pts),Real(datain_size)))
+
+allocate(sinc(-sinc_pts:sinc_pts))
+sinc(:)=0.d0
+
+!show sinc_function
+rescaler=1.d0
+open(unit=28,status="replace",file="sinc_was.dat")
+do i=-sinc_pts,-1
+  xis=delx*Dble(i)
+  sinc(i)=sin(xis*width)/(xis*width)
+  rescaler=rescaler+sinc(i)
+  write(28,*) xis,sinc(i)
+end do !end of i=-sinc_pts,-1
+sinc(0)=1.d0
+write(28,*) 0.0,1.d0
+do i=1,sinc_pts
+  xis=delx*Dble(i)
+  sinc(i)=sin(xis*width)/(xis*width)
+  rescaler=rescaler+sinc(i)
+  write(28,*) xis,sinc(i)
+  end do !end of i=1,sinc_pts
+close(28)
+
+End Subroutine Setup_Sinc_Kernel
+!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Subroutine Convolve_Data()
+Integer :: i,j,k
+    
+!Allocate(dataout(1:datain_size))
+!dataout(:)=0.d0
+
+do i=1,datain_size
+  j=i
+  do k=-sinc_pts,sinc_pts
+    xis=Dble(k)*delx
+    dataout(i)=dataout(i)+(datain(j)*sinc(k))
+    j=j-1
+    if(j.lt.1) j = j+datain_size
+  end do !end of j=-sinc_pts,sinc_pts
+end do !end of i=1,datain_size
+
+End Subroutine Convolve_Data
+!!!!!!!!!!!!!!!!!!!!!!!!
+Subroutine Adding_Padding(expando)
+Integer :: length_was, length_is
+Integer :: expando,i,j,k
+Double Precision, Allocatable, Dimension(:) :: new_datain,new_xin
+
+length_was=datain_size
+length_is=length_was*expando
+
+Allocate(new_datain(1:length_is))
+Allocate(new_xin(1:length_is))
+new_datain(:)=0.d0
+new_xin(:)=0.d0
+
+!copy old data into new_datain
+do i=1,length_was
+  new_datain(i)=datain(i)
+end do
+
+delx = xin(4)-xin(3)
+!now expand new_xis
+do i=1,expando
+  do j=1,length_was
+    k=(i-1)*length_was + j
+    new_xin(k)=delx*Dble(k)
+  end do
+end do
+print *, "delx is:",delx
+
+
+print *, "the last value I had was:",new_xin(length_is)
+
+!should have it all setup, get rid of old variables, and reallocate them
+Deallocate(xin)
+Deallocate(datain)
+
+datain_size = length_is
+
+Allocate(xin(1:length_is))
+Allocate(datain(1:length_is))
+
+do i=1,length_is
+xin(i) = new_xin(i)
+datain(i) = new_datain(i)
+end do
+
+
+print *, "padding extended",length_is
+open(unit=33, status="replace",file = "newxin.dat")
+do i=1,length_is
+write(33,*) new_xin(i)
+end do
+close(33)
+print *, "and written out"
+
+Deallocate(new_xin)
+Deallocate(new_datain)
+
+End Subroutine Adding_Padding
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Subroutine Select_Modes()
+Logical :: is_there, go_on
+Integer :: para_file_length, reason
+Character(30) :: com_name
+!set defaults
+width=0.d0
+kernel_choice = "sphere"
+padding_multiplier = 1
+extension = 0
+file_name_from_param = .false.
+
+!kernel_choice = "sphere"
+!width = 3.2
+
+Inquire(file="dshaper.parm",exist=is_there)
+if(is_there) then!parameter file exists, open and read
+  para_file_length=0
+  print *, "opening and reading parameter file"
+  go_on = .true. !set flag of reading more parameters
+  open(unit=100, file="dshaper.parm")
+  do while(go_on)
+    !read next command
+    read(100,*,iostat=reason) com_name
+    !error catching
+    if(reason.gt.0) then !error
+      print *, "something went wrong reading the file"
+    else if(reason.lt.0) then !end of file
+      go_on=.false.
+    else !all is good
+    para_file_length=para_file_length+1
+    !interprit the command with a case statement
+    Select Case(com_name)
+
+    Case("Qmin","qmin","QMIN","width","WIDTH","Width","r","R","rad","RAD","Rad","radius","Radius","RADIUS")
+    read(100,*) width
+    print *, "using characteristic length:",width    
+
+    Case("KERNEL","KERNAL","kernal","kernel","Kernal","Kernel")
+    read(100,*) kernel_choice
+    print *, "setting kernel_choice to:",kernel_choice   
+
+    Case("padding","Padding","PADDING")
+    read(100,*) padding_multiplier
+    print *, "setting padding_multiplier to:",padding_multiplier
+
+    Case("sinc extension","Extension","EXTENSION","extension")
+    read(100,*) extension
+    print *, "setting extension to:",extension
+    
+    Case("file","FILE","File")
+    read(100,*) pdf_from_param_name
+    file_name_from_param = .true.
+    print *, "should be good"
+    
+    Case Default
+    print *, "Sorry, I don't know what you meant when you said: ",Trim(com_name)
+  
+    End Select
+    End if !end of if(reason.gt.0) then
+  end do !end of do while(go_on)
+end if !otherwise, just go with defaults as set above
+
+print *, "modes selected"
+
+End Subroutine Select_Modes
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Subroutine Setup_Sphere_Impulse()
+Double Precision :: delx,x
+Integer :: xbounds,xmax, particle_size
+!set xbounds (width of function to use for 
+xbounds=Floor(datain_size/8.d0)
+
+if(Mod(xbounds,2).ne.0.d0) then
+  xbounds=xbounds+1
+end if
+
+particle_size=Int(xbounds*2+1) !have to add one for the center (0) values 
+
+rescaler=0.d0
+delx=xin(4)-xin(3)
+
+xmax=Ceiling(2.d0*width/delx)
+particle_size=xmax+1
+allocate(particle_func(1:particle_size))
+particle_func(:)=0.d0
+!shift=Real(particle_size+1.d0)/2.d0
+!shift=-Int(mod(Real(sinc_pts),Real(datain_size)))
+!shift=-Int(mod(-Real(datain_size),Real(datain_size)))
+shift = datain_size - Real(particle_size+1.d0)/2.d0 + 1
+
+do i=1,particle_size
+
+x=xin(i)
+
+if(x.gt.0.d0 .and. x.lt.2*width) then
+  particle_func(i)=4.d0*pi*x**2.d0*(1+(x**3.d0/(16.d0*width**3.d0))-(3.d0/4.d0)*(x/width))
+else
+  particle_func(i)=0.d0
+end if
+  rescaler=rescaler+particle_func(i)
+end do !end of i=-totx/2,totx/2
+!rescaler=1.d0/(rescaler)
+
+padded_datain(:)=0.d0
+do i=1,datain_size
+  padded_datain(i)=datain(i)
+end do
+do i=datain_size+1,2*datain_size
+  padded_datain(i)=(xin(i-datain_size)+xin(datain_size))*(m)+b
+end do
+
+End Subroutine Setup_Sphere_Impulse
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+Subroutine Generate_Padded_Convolution()
+dataout(:)=0.d0
+padded_dataout(:)=0.d0
+
+print *, "got to here1"
+
+padded_dataout=convolver(padded_datain,particle_func)
+
+print *, "got to here2",datain_size
+print *, "writing out padded_dataout"
+
+do i=1,datain_size
+  dataout(i)=padded_dataout(i)
+end do
+print *, "got to here3"
+End Subroutine Generate_Padded_Convolution
+!!!!!!!!!!!!!!
+
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1
 function convolver(datain,impulsein)
 !datain is the signal array
@@ -122,138 +557,4 @@ do i=1,impulse_size !going i=1,20
 end do
 convolver=tempsum !copy sum into function              
 end function convolver
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-Subroutine Read_In_Data()
-Integer :: num_args,reason
-Character(128) :: width_name, datain_name
-Logical :: is_there
-Real :: junk1, junk2, is_on
-Double Precision :: x,y
-num_args = command_argument_count()
-
-if(num_args.eq.2) then ! assume second argument is real number, describing width
-    Call get_command_argument(2,width_name)
-    Read(width_name,998) width
-    998 Format(F10.0)
-else if(num_args.eq.1) then !assume width is in file called "sphere_width.dat"
-    Inquire(file="sphere_width.dat",exist=is_there)
-    if(is_there) then
-        open(unit=69,file="sphere_width.dat")
-        read(69,*) width
-        close(69)
-    else !file not there
-        print *, " "
-        print *, "Please provide a width, either in the command line as the second"
-        print *, "          argument, or in a file 'sphere_width.dat'."
-        print *, " "
-        Call exit()
-    end if
-else !some other number of arguments
-    print *, " "
-    print *, "     Please provide the name of the pdf data file, followed by the diameter "
-    print *, "      of sphere to convolve with.  Alternativly, place this width value in"
-    print *, "    a file in the same directory as the excecutable, called 'sphere_width.dat'"
-    print *, " "
-    Call exit()
-end if
-
-Call get_command_argument(1,datain_name) !pullling in data(signal) name
-
-!find length of files
-Inquire(file=Trim(datain_name),exist=is_there)
-!rand_pick_mode=6
-if(is_there) then
-open(unit=77,position="rewind",file=Trim(datain_name))
-  !next count up how many data points there are
-  is_on=1
-  datain_size=0
-  do while(is_on.eq.1)
-    read(77,*,iostat=reason) x,y,junk1,junk2
-    if(reason.gt.0) then !some kind of error
-      print *, "something went terribly wrong",x
-      is_on=0
-    else if(reason.lt.0) then !end of file reached
-      is_on=0
-    else !is good
-    datain_size=datain_size+1
-    end if !end of reason 
-  end do !end of do while is_on
-close(77)
-else
-  print *, "file not found:",Trim(datain_name)
-end if 
-
-allocate(datain(1:datain_size))
-allocate(padded_datain(1:2*datain_size))
-allocate(padded_dataout(1:2*datain_size))
-allocate(xin(1:datain_size))
-allocate(dataout(1:datain_size))
-
-!now read in datain
-datain(:)=0.d0
-padded_datain(:)=0.d0
-
-open(unit=21,position="rewind",file=Trim(datain_name))
-do i=1,datain_size
-  read(21,*) xin(i),datain(i),junk1,junk2
-end do
-close(21)
-
-End Subroutine Read_In_Data
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-Subroutine Generate_Padded_Convolution()
-dataout(:)=0.d0
-padded_dataout(:)=0.d0
-
-padded_dataout=convolver(padded_datain,particle_func)
-
-do i=1,datain_size
-  dataout(i)=padded_dataout(i)
-end do
-End Subroutine Generate_Padded_Convolution
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-Subroutine Setup_Sphere_Impulse()
-Double Precision :: delx,x
-Integer :: xbounds,xmax, particle_size
-!set xbounds (width of function to use for 
-xbounds=Floor(datain_size/8.d0)
-
-if(Mod(xbounds,2).ne.0.d0) then
-  xbounds=xbounds+1
-end if
-
-particle_size=Int(xbounds*2+1) !have to add one for the center (0) values 
-
-rescaler=0.d0
-delx=xin(4)-xin(3)
-
-xmax=Ceiling(2.d0*width/delx)
-particle_size=xmax+1
-allocate(particle_func(1:particle_size))
-particle_func(:)=0.d0
-shift=Real(particle_size+1.d0)/2.d0
-
-do i=1,particle_size
-
-x=xin(i)
-
-if(x.gt.0.d0 .and. x.lt.2*width) then
-  particle_func(i)=4.d0*pi*x**2.d0*(1+(x**3.d0/(16.d0*width**3.d0))-(3.d0/4.d0)*(x/width))
-else
-  particle_func(i)=0.d0
-end if
-  rescaler=rescaler+particle_func(i)
-end do !end of i=-totx/2,totx/2
-rescaler=1.d0/(rescaler)
-
-padded_datain(:)=0.d0
-do i=1,datain_size
-  padded_datain(i)=datain(i)
-end do
-do i=datain_size+1,2*datain_size
-  padded_datain(i)=(xin(i-datain_size)+xin(datain_size))*(m)+b
-end do
-
-End Subroutine Setup_Sphere_Impulse
-
 End Program
