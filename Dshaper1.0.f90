@@ -33,17 +33,9 @@ if(kernel_choice.eq.'sinc') then
   Call Setup_Sinc_Kernel()
   Call Convolve_Data()
 else if(kernel_choice.eq.'sphere') then 
-  !Call Setup_Sphere_Kernel()
-  !do other things!
-Call Setup_Sphere_Impulse()
-Call Generate_Padded_Convolution()
-
-else if(kernel_choice.eq.'user') then 
-  print *, "not yet implemented"
-   !Call User_Provided_Kernel()
-   print *, "width is:",width
+  Call Setup_Sphere_Impulse()
+  Call Generate_Padded_Convolution()
 end if
-
 
 !to write data out
 Call Write_Out_Function()
@@ -184,102 +176,6 @@ end do
 close(21)
 
 End Subroutine Read_In_Data
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-Subroutine User_Provided_Kernel()
-Integer :: reason, user_file_length,i, c
-Integer :: col_count
-Logical :: is_on, go_on
-Double Precision :: x,y,z1,z2
-Character(120) :: first_line
-delx=xin(4)-xin(3)
-
-!add number of columns adjustment
-!add ability to take symmetric or asymetric dataset
-
-open(unit=77,file=Trim(ufk_name))
-  read(77,'(a)') first_line
-  col_count = count([len_trim(first_line) > 0, (first_line(c:c)/=" " .and. &
-      first_line(c:c)/="," .and. first_line(c+1:c+1) == " " .or. &
-      first_line(c+1:c+1) == "," , c=1,len_trim(first_line)-1)])
-close(77)
-
-print *, "user kernal had this many columns",col_count
-
-user_file_length=0
-go_on=.true.
-!first, determine length of user file
-open(unit=77,position="rewind",file=Trim(ufk_name))
-do while(go_on)
-    if(col_count.eq.1) read(77,*,iostat=reason) y
-    if(col_count.eq.2) read(77,*,iostat=reason) x,y
-    if(col_count.eq.3) read(77,*,iostat=reason) x,y,z1
-    if(col_count.eq.4) read(77,*,iostat=reason) x,y,z1,z2
-    if(reason.gt.0) then !error
-      print *, "something went wrong reading the file"
-    else if(reason.lt.0) then !end of file
-      go_on=.false.
-    else !all is good
-    user_file_length=user_file_length+1
-    end if
-end do !end of do while(is_on.eq.1)
-close(77)
-
-sinc_pts=Floor(Real(user_file_length)/2.d0)
-print *, "sinc_pts is:",sinc_pts
-allocate(sinc(-sinc_pts:sinc_pts))
-
-sinc(:)=0.d0
-print *, "col_count was:",col_count
-rescaler = 0.d0
-open(unit=77,position="rewind",file=Trim(ufk_name))
-do i = -sinc_pts,sinc_pts
-    if(col_count.eq.1) read(77,*) y
-    if(col_count.eq.2) read(77,*) x, y
-    if(col_count.eq.3) read(77,*) x, y, z1
-    if(col_count.eq.4) read(77,*) x, y, z1, z2
-  sinc(i) = y
-  rescaler = rescaler + sinc(i)
-end do
-
-close(77)
-
-shift=-Int(mod(Real(sinc_pts),Real(datain_size)))
-
-open(unit=99,status="replace",file="kernel_was.dat")
-do i=-sinc_pts,sinc_pts
-  xis = Dble(i)
-  write(99,*) xis, sinc(i)
-end do
-close(99)
-
-End Subroutine User_Provided_Kernel
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-Subroutine Setup_Sphere_Kernel()
-delx=xin(4)-xin(3)
-sinc_pts=2*datain_size+extension
-
-print *, "diameter is now:",width
-shift=-Int(mod(Real(sinc_pts),Real(datain_size)))
-
-allocate(sinc(-sinc_pts:sinc_pts))
-sinc(:)=0.d0
-rescaler = 0.d0
-open(unit=28,status="replace",file="convolver_sphere_was.dat")
-do i=-sinc_pts,sinc_pts
-  xis = delx*Dble(i)
-  if(xis.le.2.d0*width .and. xis.gt.0.d0) then
-    sinc(i) = 1.d0 - (1.5d0 * (xis / (2.d0*width)))+(0.5d0*((xis/(2.d0* width))**3.d0))
-    sinc(i) = 4.d0 * 3.141592d0 * (xis**1.d0) * sinc(i)
-    write(28,*) xis, sinc(i)
-  else
-    write(28,*) xis, 0.d0
-  end if
-  
-  rescaler = rescaler + sinc(i) 
-end do
-close(28)
-
-End Subroutine Setup_Sphere_Kernel
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 Subroutine Setup_Sinc_Kernel()
 delx=xin(4)-xin(3)
@@ -516,8 +412,6 @@ do i=1,datain_size
 end do
 print *, "got to here3"
 End Subroutine Generate_Padded_Convolution
-!!!!!!!!!!!!!!
-
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1
 function convolver(datain,impulsein)
 !datain is the signal array
