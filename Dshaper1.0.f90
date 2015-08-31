@@ -27,8 +27,6 @@ Call Read_In_Data()
 
 if (padding_multiplier.gt.1) Call Adding_Padding(padding_multiplier)
 
-
-!to setup the sinc function
 if(kernel_choice.eq.'sinc') then
   Call Setup_Sinc_Kernel()
   Call Convolve_Data()
@@ -73,8 +71,6 @@ Character(160) :: first_line
 Integer :: c, col_count
 
 num_args = command_argument_count()
-
-print *, "status of that one thingy:",file_name_from_param
 
 if(num_args.eq.2) then ! assume second argument is real number, describing width
     Call get_command_argument(2,width_name)
@@ -187,7 +183,7 @@ sinc(:)=0.d0
 
 !show sinc_function
 rescaler=1.d0
-open(unit=28,status="replace",file="sinc_was.dat")
+open(unit=28,status="replace",file="impulse_was.dat")
 do i=-sinc_pts,-1
   xis=delx*Dble(i)
   sinc(i)=sin(xis*width)/(xis*width)
@@ -250,10 +246,6 @@ do i=1,expando
     new_xin(k)=delx*Dble(k)
   end do
 end do
-print *, "delx is:",delx
-
-
-print *, "the last value I had was:",new_xin(length_is)
 
 !should have it all setup, get rid of old variables, and reallocate them
 Deallocate(xin)
@@ -269,14 +261,12 @@ xin(i) = new_xin(i)
 datain(i) = new_datain(i)
 end do
 
-
-print *, "padding extended",length_is
 open(unit=33, status="replace",file = "newxin.dat")
 do i=1,length_is
 write(33,*) new_xin(i)
 end do
 close(33)
-print *, "and written out"
+
 
 Deallocate(new_xin)
 Deallocate(new_datain)
@@ -345,7 +335,6 @@ if(is_there) then!parameter file exists, open and read
   end do !end of do while(go_on)
 end if !otherwise, just go with defaults as set above
 
-print *, "modes selected"
 
 End Subroutine Select_Modes
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -400,17 +389,12 @@ Subroutine Generate_Padded_Convolution()
 dataout(:)=0.d0
 padded_dataout(:)=0.d0
 
-print *, "got to here1"
-
 padded_dataout=convolver(padded_datain,particle_func)
-
-print *, "got to here2",datain_size
-print *, "writing out padded_dataout"
 
 do i=1,datain_size
   dataout(i)=padded_dataout(i)
 end do
-print *, "got to here3"
+
 End Subroutine Generate_Padded_Convolution
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1
 function convolver(datain,impulsein)
